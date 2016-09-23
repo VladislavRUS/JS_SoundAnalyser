@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Analizer</title>
+</head>
+<body style="background-color: darkgrey">
+
+<canvas id="signal" style="border: 1px solid black;"></canvas>
+<canvas id="scroll" style="position: absolute; top: 0px; left: 0px"></canvas>
+
+<button id="record">Record</button>
+<button id="f128" onclick="drawSpectrum(128)">128</button>
+<button id="f256" onclick="drawSpectrum(256)">256</button>
+<button id="f512" onclick="drawSpectrum(512)">512</button>
+<button id="f1024" onclick="drawSpectrum(1024)">1024</button>
+<button id="f2048" onclick="drawSpectrum(2048)">2048</button>
+<button id="f4096" onclick="drawSpectrum(4096)">4096</button>
+<!--<div id="record">Record</div>-->
+
+<div id="link"></div>
+</body>
+<script>
+
+    var signalCanvas = document.getElementById('signal');
+    signalCanvas.width = 1340;
+    signalCanvas.height = 600;
+    var signalCtx = signalCanvas.getContext('2d');
+
+    signalCtx.fillStyle = 'black';
+    signalCtx.rect(0, 0, signalCanvas.width, signalCanvas.height);
+    signalCtx.fill();
+
+    var scrollCanvas = document.getElementById('scroll');
+    scrollCanvas.width = 1340;
+    scrollCanvas.clientHeight = 600;
+    var scrollCtx = scrollCanvas.getContext('2d');
+
+    var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    navigator.getUserMedia = (navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia);
+
+    var recorded = [];
+    var recording = false;
+    var recLength = 0;
+    var sampleRate = audioCtx.sampleRate;
+
+    var leftChannel = [];
+    var rightChannel = [];
+    var res = [];
+
+    var bufferSize = 512;
+
+    var analyzerData = [];
+
+    var scriptProcessor;
+    var currentX = 0;
+
+    var Scroll = function (config) {
+        this.up = config.up || 0;
+        this.down = config.down || 200;
+        this.color = config.color || 'whitesmoke';
+        this.leftSide = config.leftSide || 0;
+        this.rightSide = this.leftSide + 100;
+        this.y = config.y || 10;
+        this.height = 150 - 10;
+        this.caught = false;
+        this.diff = 0;
+        this.context = config.context || null;
+        this.callbacks = config.callbacks || [(function () {
+                    console.log('callback')
+                })];
+    };
+
+    Scroll.prototype.draw = function () {
+        console.log('draw');
+
+        this.context.clearRect(0, this.up, signalCanvas.width, this.down);
+
+        this.context.strokeStyle = this.color;
+        this.context.globalAlpha = 0.9;
+        this.context.lineWidth = 2;
+        this.context.strokeRect(this.leftSide, this.y, this.rightSide - this.leftSide, this.height);
+    };
+
+    var signalScroll = new Scroll({up: 0, down: signalCanvas.height / 2, context: scrollCtx, callbacks: [{up: false, f: drawPart}, {up:true, f: drawSpectrum}]});
+    var scrolls = [];
+    scrolls.push(signalScroll);
+
+    document.getElementById('scroll').addEventListener('mousedown', function (e) {
+        scrolls.forEach(function (scroll) {
+            if (e.pageX > scroll.leftSide && e.pageX < scroll.rightSide && e.pageY > scroll.up && e.pageY < scroll.down) {
+                console.log('caught!');
+                scroll.caught = true;
+                scroll.diffX = e.pageX - scroll.leftSide;
+                scroll.diffY = scroll.rightSide - e.pageX;
+            }
+        })
+    });
+
+    document.getElementById('scroll').addEventListener('mousemove', function (e) {
+        scrolls.forEach(function (scroll) {
+            if (scroll.caught) {
+                console.log('move');
+                scroll.leftSide = e.pageX - scroll.diffX;
+                scroll.rightSide = e.pageX + scroll.diffY;
+                scroll.callbacks.forEach(function(cb) {
+                    if (!cb.up)
+                        cb.f();
+                });
+                scroll.draw();
+            }
+        });
+    });
+
+    document.getElementById('scroll').addEventListener('mouseup', function (e) {
+        scrolls.forEach(function (scroll) {
+            scroll.caught = false;
+            scroll.callbacks.forEach(function(cb) {
+                cb.f();
+            });
+        });
+    });
+
+    document.getElementById('scroll').addEventListener('mousewheel', function (e) {
+        scrolls.forEach(function (scroll) {
+            scroll.draw();
+            scroll.callbacks.forEach(function(cb) {
+                cb.f();
+            });
+
+            var delta = e.wheelDelta;
+            if (delta < 0) {
+                scroll.leftSide -= 10;
+                scroll.rightSide += 10;
+
+            } else {
+                var nextLeft = scroll.leftSide + 10;
+                var nextRight = scroll.rightSide - 10;
+
+                var ratioWidth = (nextRight - nextLeft) / signalCanvas.width;
+
+                var widthRest = Math.floor(res.length * ratioWidth);
+
+                if ((widthRest) < 100)
+                    return;
+                scroll.leftSide = nextLeft;
+                scroll.rightSide = nextRight;
+            }
+        });
+    });
+
+    if (navigator.getUserMedia) {
+        navigator.getUserMedia({audio: true},
+                function (stream) {
+                    scriptProcessor = audioCtx.createScriptProcessor(bufferSize, 1, 2);
+                    scriptProcessor.connect(audioCtx.destination);
+
+                    var source = audioCtx.createMediaStreamSource(stream);
+                    source.connect(scriptProcessor);
+
+                    scriptProcessor.onaudioprocess = function (e) {
+                        if (recording) {
+                            var left = e.inputBuffer.getChannelData(0);
+
+                            leftChannel.push(new Float32Array(left));
+                            recLength += bufferSize;
+
+                            console.log('Recording...');
+                        }
+                    };
+                },
+
+                function (err) {
+                    console.log('The following gUM error occured: ' + err);
+                }
+        );
+    } else {
+        console.log('getUserMedia not supported on your browser!');
+    }
+
+    function mergeBuffers(channelBuffer, recordingLength) {
+        var result = new Float32Array(recordingLength);
+        var offset = 0;
+        var len = channelBuffer.length;
+        for (var i = 0; i < len; i++) {
+            var buffer = channelBuffer[i];
+            result.set(buffer, offset);
+            offset += buffer.length;
+        }
+        return result;
+    }
+
+    function interleave(leftChannel, rightChannel) {
+        var length = leftChannel.length + rightChannel.length;
+        var result = new Float32Array(length);
+
+        for (var index = 0, inputIndex = 0; index < length;) {
+            result[index++] = leftChannel[inputIndex];
+            result[index++] = rightChannel[inputIndex];
+            inputIndex++;
+        }
+        return result;
+    }
+
+    function writeUTFBytes(view, offset, string) {
+        var len = string.length;
+        for (var i = 0; i < len; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    }
+
+    function floatTo16BitPCM(output, offset, input) {
+        for (let i = 0; i < input.length; i++, offset += 2) {
+            let signalScroll = Math.max(-1, Math.min(1, input[i]));
+            output.setInt16(offset, signalScroll < 0 ? signalScroll * 0x8000 : signalScroll * 0x7FFF, true);
+        }
+    }
+
+    function drawSpectrum(samples) {
+        var ratioLeft = signalScroll.leftSide / signalCanvas.width;
+        var startPosition = Math.floor(res.length * ratioLeft);
+
+        if (samples == undefined) {
+            samples = 1024;
+        }
+
+        if (startPosition + samples > res.length) {
+            alert('Longer!');
+            return;
+        }
+        var signalData = new Float32Array(res.slice(startPosition, startPosition + samples));
+
+        var len = signalData.length;
+        var output = [];
+
+        var max = 0;
+        var min = 0;
+
+        for (var k = 0; k < len; k++) {
+            var real = 0;
+            var img = 0;
+            for (var n = 0; n < len; n++) {
+                real += signalData[n] * Math.cos(-2 * Math.PI * k * n / len);
+                img += signalData[n] * Math.sin(-2 * Math.PI * k * n / len);
+            }
+            var value = Math.sqrt(real * real + img * img);
+            if (value > max) {
+                max = value;
+            }
+            if (value < min) {
+                min = value;
+            }
+            output.push(value);
+        }
+
+        for (var i = 0; i < output.length; i++) {
+            output[i]  = scaleBetween(output[i], 0, 200, min, max);
+        }
+
+        signalCtx.clearRect(0, signalCanvas.height * 2 / 3, signalCanvas.width, signalCanvas.height);
+        signalCtx.fillStyle = 'black';
+        signalCtx.rect(0, signalCanvas.height * 2 / 3, signalCanvas.width, signalCanvas.height);
+        signalCtx.fill();
+        signalCtx.strokeStyle = '#33cc00';
+        var step = signalCanvas.width / (output.length / 4);
+        for (var i = 0, j = 0; j < output.length / 4; i += step, j++) {
+            signalCtx.beginPath();
+            signalCtx.moveTo(i, signalCanvas.height);
+            signalCtx.lineTo(i, signalCanvas.height - output[j]);
+            signalCtx.closePath();
+            signalCtx.stroke();
+        }
+    }
+
+    function scaleBetween(unscaledNum, minAllowed, maxAllowed, min, max) {
+        return (maxAllowed - minAllowed) * (unscaledNum - min) / (max - min) + minAllowed;
+    }
+
+    function drawSignal() {
+        signalCtx.clearRect(0, 0, signalCanvas.width, signalCanvas.height / 4);
+        signalCtx.fillStyle = 'black';
+        signalCtx.rect(0, 0, signalCanvas.width, signalCanvas.height / 4);
+        signalCtx.fill();
+
+        signalCtx.fillStyle = '#ff6600';
+        var step = signalCanvas.width / res.length;
+        for (var i = 0, j = 0; j < res.length; i += step, j++) {
+            signalCtx.beginPath();
+            signalCtx.arc(i, signalCanvas.height / 8 + res[j] * 100, 0.5, 0, 2 * Math.PI);
+            signalCtx.fill();
+            signalCtx.closePath();
+        }
+        signalScroll.draw();
+    }
+
+    function drawScroll() {
+        signalScroll.draw();
+    }
+
+    function drawPart() {
+        signalCtx.clearRect(0, signalCanvas.height / 4, signalCanvas.width, signalCanvas.height);
+        signalCtx.fillStyle = 'black';
+        signalCtx.rect(0, signalCanvas.height / 4, signalCanvas.width, signalCanvas.height);
+        signalCtx.fill();
+
+        signalCtx.fillStyle = '#0099ff';
+        console.log('res: ' + res.length);
+        console.log('left: ' + signalScroll.leftSide);
+        console.log('right: ' + signalScroll.rightSide);
+
+        var ratioLeft = signalScroll.leftSide / signalCanvas.width;
+        var ratioWidth = (signalScroll.rightSide - signalScroll.leftSide) / signalCanvas.width;
+
+        var leftRes = Math.floor(res.length * ratioLeft);
+        var widthRest = Math.floor(res.length * ratioWidth);
+
+        console.log('leftRes: ' + leftRes);
+        console.log('widthRes: ' + widthRest);
+
+        var arr = res.slice(leftRes, leftRes + widthRest);
+        var step = signalCanvas.width / arr.length;
+        for (var i = 0, j = 0; j < arr.length; i += step, j++) {
+            signalCtx.beginPath();
+            signalCtx.arc(i, signalCanvas.height / 2 + arr[j] * 100, 1, 0, 2 * Math.PI);
+            signalCtx.fill();
+            signalCtx.closePath();
+        }
+    }
+
+    document.getElementById('record').onclick = function () {
+        if (!recording) {
+            leftChannel = [];
+            rightChannel = [];
+
+            this.innerHTML = 'Recording...';
+            recorded = [];
+            recLength = 0;
+
+        } else {
+            this.innerHTML = 'Record';
+            res = mergeBuffers(leftChannel, recLength);
+            drawSignal();
+            drawSpectrum();
+        }
+        recording = !recording;
+    };
+
+</script>
+</html>
