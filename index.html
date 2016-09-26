@@ -3,11 +3,39 @@
 <head>
     <meta charset="UTF-8">
     <title>Analizer</title>
-</head>
-<body style="background-color: darkgrey">
+    <style>
+        body {
+            background-color: lightblue;
+            overflow-y: hidden;
+        }
 
-<canvas id="signal" style="border: 1px solid black;"></canvas>
-<canvas id="scroll" style="position: absolute; top: 0px; left: 0px"></canvas>
+        #signal {
+            border: 1px solid black;
+        }
+
+        #signalScroll {
+            cursor: pointer;
+            position: absolute;
+            top: 10px;
+            left: 10px;
+        }
+
+        #part {
+            border: 1px solid black;
+        }
+
+        #spectrum {
+            border: 1px solid black;
+        }
+    </style>
+</head>
+<body>
+
+<canvas id="signal"></canvas>
+<canvas id="signalScroll"></canvas>
+
+<canvas id="part"></canvas>
+<canvas id="spectrum"></canvas>
 
 <button id="record">Record</button>
 <button id="f128" onclick="drawSpectrum(128)">128</button>
@@ -16,34 +44,78 @@
 <button id="f1024" onclick="drawSpectrum(1024)">1024</button>
 <button id="f2048" onclick="drawSpectrum(2048)">2048</button>
 <button id="f4096" onclick="drawSpectrum(4096)">4096</button>
-<!--<div id="record">Record</div>-->
+<input type="file" id="file">
+<audio id="audio"></audio>
 
 <div id="link"></div>
 </body>
 <script>
 
+    var canvasWidth = 1300;
+    var canvasBackground = 'white';
+
     var signalCanvas = document.getElementById('signal');
-    signalCanvas.width = 1340;
-    signalCanvas.height = 600;
+    signalCanvas.width = canvasWidth;
+    signalCanvas.height = 100;
     var signalCtx = signalCanvas.getContext('2d');
 
-    signalCtx.fillStyle = 'black';
-    signalCtx.rect(0, 0, signalCanvas.width, signalCanvas.height);
-    signalCtx.fill();
+    var partCanvas = document.getElementById('part');
+    partCanvas.width = canvasWidth;
+    partCanvas.height = 200;
+    var partCtx = partCanvas.getContext('2d');
 
-    var scrollCanvas = document.getElementById('scroll');
-    scrollCanvas.width = 1340;
-    scrollCanvas.clientHeight = 600;
-    var scrollCtx = scrollCanvas.getContext('2d');
+    var spectrumCanvas = document.getElementById('spectrum');
+    spectrumCanvas.width = canvasWidth;
+    spectrumCanvas.height = 300;
+    var spectrumCtx = spectrumCanvas.getContext('2d');
+
+    var signalScrollCanvas = document.getElementById('signalScroll');
+    signalScrollCanvas.width = canvasWidth;
+    signalScrollCanvas.height = 100;
+    var signalScrollCtx = signalScrollCanvas.getContext('2d');
+
+    function drawGrid(canvas) {
+        var size = 10;
+        var horizontalAmount = Math.ceil(canvas.height / size);
+        var verticalAmount = Math.ceil(canvas.width / size);
+
+        var ctx = canvas.getContext('2d');
+        ctx.lineWidth = 0.05;
+        for (var i = 0, j = 0; j < horizontalAmount; i += size, j++) {
+            ctx.beginPath();
+            ctx.moveTo(0, i);
+            ctx.lineTo(canvas.width, i);
+            ctx.closePath();
+            ctx.stroke();
+        }
+
+        for (var i = 0, j = 0; j < verticalAmount; i += size, j++) {
+            ctx.beginPath();
+            ctx.moveTo(i, 0);
+            ctx.lineTo(i, canvas.height);
+            ctx.closePath();
+            ctx.stroke();
+        }
+    }
+
+    function clearCanvas(canvas) {
+        var ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = canvasBackground;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    [signalCanvas, partCanvas, spectrumCanvas].forEach(function(canvas) {
+        clearCanvas(canvas);
+        drawGrid(canvas);
+    });
 
     var audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
     navigator.getUserMedia = (navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia);
 
     var recorded = [];
     var recording = false;
     var recLength = 0;
-    var sampleRate = audioCtx.sampleRate;
 
     var leftChannel = [];
     var rightChannel = [];
@@ -51,60 +123,69 @@
 
     var bufferSize = 512;
 
-    var analyzerData = [];
-
     var scriptProcessor;
     var currentX = 0;
 
+    var backgroundColor = 'white';
+    var lineColor = 'black';
+    var spectrumScale = 2;
+    var samples = 1024;
+
     var Scroll = function (config) {
-        this.up = config.up || 0;
-        this.down = config.down || 200;
-        this.color = config.color || 'whitesmoke';
+        this.x = config.x || 0;
+        this.y = config.y || 0;
+        this.color = 'black';
+        this.width = 100;
         this.leftSide = config.leftSide || 0;
-        this.rightSide = this.leftSide + 100;
-        this.y = config.y || 10;
-        this.height = 150 - 10;
+        this.rightSide = this.leftSide + this.width;
+        this.height = 60;
         this.caught = false;
-        this.diff = 0;
-        this.context = config.context || null;
+        this.canvas = config.canvas || null;
         this.callbacks = config.callbacks || [(function () {
                     console.log('callback')
                 })];
     };
 
     Scroll.prototype.draw = function () {
-        console.log('draw');
+        var context = this.canvas.getContext('2d');
 
-        this.context.clearRect(0, this.up, signalCanvas.width, this.down);
+        context.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-        this.context.strokeStyle = this.color;
-        this.context.globalAlpha = 0.9;
-        this.context.lineWidth = 2;
-        this.context.strokeRect(this.leftSide, this.y, this.rightSide - this.leftSide, this.height);
+        context.strokeStyle = this.color;
+        context.globalAlpha = 0.9;
+        context.lineWidth = 2;
+        context.strokeRect(this.leftSide, this.y, this.width, this.height);
     };
 
-    var signalScroll = new Scroll({up: 0, down: signalCanvas.height / 2, context: scrollCtx, callbacks: [{up: false, f: drawPart}, {up:true, f: drawSpectrum}]});
+    var signalScroll = new Scroll({
+        leftSide: 10,
+        y: signalCanvas.height/2 - 30,
+        canvas: signalScrollCanvas,
+        callbacks: [{up: false, f: drawPart}, {up: true, f: drawSpectrum}]
+    });
+
     var scrolls = [];
     scrolls.push(signalScroll);
 
-    document.getElementById('scroll').addEventListener('mousedown', function (e) {
+    /*********************** DOCUMENT ONCLICK*****************/
+    document.getElementById('signalScroll').addEventListener('mousedown', function (e) {
         scrolls.forEach(function (scroll) {
-            if (e.pageX > scroll.leftSide && e.pageX < scroll.rightSide && e.pageY > scroll.up && e.pageY < scroll.down) {
-                console.log('caught!');
+            if (e.pageX > scroll.leftSide && e.pageX < scroll.leftSide + scroll.width) {
                 scroll.caught = true;
-                scroll.diffX = e.pageX - scroll.leftSide;
-                scroll.diffY = scroll.rightSide - e.pageX;
+                scroll.diff = e.pageX - scroll.leftSide;
             }
         })
     });
 
-    document.getElementById('scroll').addEventListener('mousemove', function (e) {
+    document.getElementById('signalScroll').addEventListener('mousemove', function (e) {
         scrolls.forEach(function (scroll) {
             if (scroll.caught) {
-                console.log('move');
-                scroll.leftSide = e.pageX - scroll.diffX;
-                scroll.rightSide = e.pageX + scroll.diffY;
-                scroll.callbacks.forEach(function(cb) {
+                if (e.pageX - scroll.diff < 10 || canvasWidth - scroll.width < 10 ) {
+                    return;
+                }
+                scroll.leftSide = e.pageX - scroll.diff;
+                scroll.rightSide = scroll.leftSide + scroll.width;
+                scroll.callbacks.forEach(function (cb) {
                     if (!cb.up)
                         cb.f();
                 });
@@ -113,22 +194,18 @@
         });
     });
 
-    document.getElementById('scroll').addEventListener('mouseup', function (e) {
+    document.getElementById('signalScroll').addEventListener('mouseup', function (e) {
         scrolls.forEach(function (scroll) {
             scroll.caught = false;
-            scroll.callbacks.forEach(function(cb) {
+            scroll.callbacks.forEach(function (cb) {
                 cb.f();
             });
         });
     });
 
-    document.getElementById('scroll').addEventListener('mousewheel', function (e) {
+    document.getElementById('signalScroll').addEventListener('mousewheel', function (e) {
+        e.preventDefault();
         scrolls.forEach(function (scroll) {
-            scroll.draw();
-            scroll.callbacks.forEach(function(cb) {
-                cb.f();
-            });
-
             var delta = e.wheelDelta;
             if (delta < 0) {
                 scroll.leftSide -= 10;
@@ -147,8 +224,77 @@
                 scroll.leftSide = nextLeft;
                 scroll.rightSide = nextRight;
             }
+            scroll.width = (scroll.rightSide - scroll.leftSide);
+
+            scroll.callbacks.forEach(function (cb) {
+                cb.f();
+            });
+            scroll.draw();
         });
     });
+
+    document.getElementById('record').onclick = function () {
+        if (!recording) {
+            startRecording();
+
+        } else {
+            stopRecording();
+        }
+    };
+
+    function startRecording() {
+        recording = true;
+        leftChannel = [];
+        rightChannel = [];
+
+        document.getElementById('record').innerHTML = 'Recording...';
+        recorded = [];
+        recLength = 0;
+    }
+
+    function stopRecording() {
+        recording = false;
+        document.getElementById('record').innerHTML = 'Record';
+        res = mergeBuffers(leftChannel, recLength);
+        drawSignal();
+        drawSpectrum();
+    }
+
+    document.getElementById('spectrum').addEventListener('mousewheel', function(e) {
+        if (e.wheelDelta > 0) {
+            spectrumScale += spectrumScale < 50 ? 1 : 0;
+        } else {
+            spectrumScale -= spectrumScale > 2 ? 1 : 0;
+        }
+        drawSpectrum(samples);
+    });
+
+    document.getElementById('file').onchange = function() {
+
+        document.getElementById('audio').src = URL.createObjectURL(document.getElementsByTagName('input')[0].files[0]);
+        var mediaElement = document.getElementById('audio');
+        var sourceNode = audioCtx.createMediaElementSource(mediaElement);
+        sourceNode.connect(scriptProcessor);
+        mediaElement.play();
+        startRecording();
+
+        mediaElement.onended = function() {
+            stopRecording();
+        };
+
+        /*
+        var reader = new FileReader();
+        reader.onload = function(ev) {
+            audioCtx.decodeAudioData(ev.target.result, function(buffer) {
+                var myArrBuffer = audioCtx.createBuffer(1, audioCtx.sampleRate / 2)
+                recLength = audioCtx.sampleRate * 20;
+                leftChannel.push(new Float32Array(buffer.getChannelData(0)).slice(0, audioCtx.sampleRate * 20));
+                stopRecording();
+            });
+        };
+        reader.readAsArrayBuffer(this.files[0]);*/
+    };
+    /*********************** !DOCUMENT ONCLICK*****************/
 
     if (navigator.getUserMedia) {
         navigator.getUserMedia({audio: true},
@@ -162,7 +308,6 @@
                     scriptProcessor.onaudioprocess = function (e) {
                         if (recording) {
                             var left = e.inputBuffer.getChannelData(0);
-
                             leftChannel.push(new Float32Array(left));
                             recLength += bufferSize;
 
@@ -217,7 +362,69 @@
         }
     }
 
+    function scaleBetween(unscaledNum, minAllowed, maxAllowed, min, max) {
+        return (maxAllowed - minAllowed) * (unscaledNum - min) / (max - min) + minAllowed;
+    }
+
+    function drawSignal() {
+        clearCanvas(signalCanvas);
+        drawGrid(signalCanvas);
+
+        signalCtx.fillStyle = lineColor;
+
+        var step = signalCanvas.width / res.length;
+        signalCtx.font = '12px Verdana';
+        signalCtx.fillText("Duration: " + (res.length / audioCtx.sampleRate).toFixed(2) + ' s.', 10, 15);
+
+        for (var i = 0, j = 0; j < res.length; i += step, j++) {
+            signalCtx.beginPath();
+            signalCtx.arc(i, signalCanvas.height / 2 + res[j] * 20, 0.2, 0, 2 * Math.PI);
+            signalCtx.closePath();
+            signalCtx.fill();
+        }
+        signalScroll.draw();
+    }
+
+    function drawScroll() {
+        signalScroll.draw();
+    }
+
+    function drawPart() {
+        clearCanvas(partCanvas);
+        drawGrid(partCanvas);
+
+        console.log('res: ' + res.length);
+        console.log('left: ' + signalScroll.leftSide);
+        console.log('right: ' + signalScroll.rightSide);
+        var ratioLeft = signalScroll.leftSide / signalCanvas.width;
+
+        var ratioWidth = (signalScroll.rightSide - signalScroll.leftSide) / signalCanvas.width;
+        var leftRes = Math.floor(res.length * ratioLeft);
+
+        var widthRest = Math.floor(res.length * ratioWidth);
+        console.log('leftRes: ' + leftRes);
+
+        console.log('widthRes: ' + widthRest);
+        var arr = res.slice(leftRes, leftRes + widthRest);
+
+        partCtx.fillStyle = lineColor;
+
+        var step = partCanvas.width / arr.length;
+        partCtx.font = '12px Verdana';
+        partCtx.fillText("Duration: " + ((arr.length / audioCtx.sampleRate) * 1000).toFixed(2) + ' ms.', 10, 15);
+
+        for (var i = 0, j = 0; j < arr.length; i += step, j++) {
+            partCtx.beginPath();
+            partCtx.arc(i, partCanvas.height / 2 + arr[j] * 100, 1, 0, 2 * Math.PI);
+            partCtx.closePath();
+            partCtx.fill();
+        }
+    }
+
     function drawSpectrum(samples) {
+        clearCanvas(spectrumCanvas);
+        drawGrid(spectrumCanvas);
+
         var ratioLeft = signalScroll.leftSide / signalCanvas.width;
         var startPosition = Math.floor(res.length * ratioLeft);
 
@@ -226,6 +433,8 @@
         }
 
         if (startPosition + samples > res.length) {
+            console.log(startPosition + samples);
+            console.log(res.length);
             alert('Longer!');
             return;
         }
@@ -255,96 +464,32 @@
         }
 
         for (var i = 0; i < output.length; i++) {
-            output[i]  = scaleBetween(output[i], 0, 200, min, max);
+            output[i] = scaleBetween(output[i], 0, 200, min, max);
         }
 
-        signalCtx.clearRect(0, signalCanvas.height * 2 / 3, signalCanvas.width, signalCanvas.height);
-        signalCtx.fillStyle = 'black';
-        signalCtx.rect(0, signalCanvas.height * 2 / 3, signalCanvas.width, signalCanvas.height);
-        signalCtx.fill();
-        signalCtx.strokeStyle = '#33cc00';
-        var step = signalCanvas.width / (output.length / 4);
-        for (var i = 0, j = 0; j < output.length / 4; i += step, j++) {
-            signalCtx.beginPath();
-            signalCtx.moveTo(i, signalCanvas.height);
-            signalCtx.lineTo(i, signalCanvas.height - output[j]);
-            signalCtx.closePath();
-            signalCtx.stroke();
+        spectrumCtx.strokeStyle = lineColor;
+        spectrumCtx.lineWidth = 1;
+        var step = spectrumCanvas.width / (output.length / spectrumScale);
+
+        spectrumCtx.font = '10px Arial';
+        spectrumCtx.fillStyle = 'black';
+
+        spectrumCtx.beginPath();
+        var verticalStep = Math.floor(spectrumCanvas.height / 10);
+        for (var i = spectrumCanvas.height - 15, j = 0; i > 0; i -= verticalStep, j += 20) {
+            spectrumCtx.fillText(j, 10, i);
         }
-    }
 
-    function scaleBetween(unscaledNum, minAllowed, maxAllowed, min, max) {
-        return (maxAllowed - minAllowed) * (unscaledNum - min) / (max - min) + minAllowed;
-    }
-
-    function drawSignal() {
-        signalCtx.clearRect(0, 0, signalCanvas.width, signalCanvas.height / 4);
-        signalCtx.fillStyle = 'black';
-        signalCtx.rect(0, 0, signalCanvas.width, signalCanvas.height / 4);
-        signalCtx.fill();
-
-        signalCtx.fillStyle = '#ff6600';
-        var step = signalCanvas.width / res.length;
-        for (var i = 0, j = 0; j < res.length; i += step, j++) {
-            signalCtx.beginPath();
-            signalCtx.arc(i, signalCanvas.height / 8 + res[j] * 100, 0.5, 0, 2 * Math.PI);
-            signalCtx.fill();
-            signalCtx.closePath();
+        for (var i = 50, j = 0; j < output.length / spectrumScale; i += step, j++) {
+            if (j % Math.floor((50) / spectrumScale) == 0) {
+                spectrumCtx.fillText(Math.floor(j * audioCtx.sampleRate / samples), i - 5, spectrumCanvas.height - 15);
+            }
+            spectrumCtx.moveTo(i, spectrumCanvas.height - 30);
+            spectrumCtx.lineTo(i, spectrumCanvas.height - 30 - output[j]);
         }
-        signalScroll.draw();
+        spectrumCtx.stroke();
+        spectrumCtx.closePath();
     }
-
-    function drawScroll() {
-        signalScroll.draw();
-    }
-
-    function drawPart() {
-        signalCtx.clearRect(0, signalCanvas.height / 4, signalCanvas.width, signalCanvas.height);
-        signalCtx.fillStyle = 'black';
-        signalCtx.rect(0, signalCanvas.height / 4, signalCanvas.width, signalCanvas.height);
-        signalCtx.fill();
-
-        signalCtx.fillStyle = '#0099ff';
-        console.log('res: ' + res.length);
-        console.log('left: ' + signalScroll.leftSide);
-        console.log('right: ' + signalScroll.rightSide);
-
-        var ratioLeft = signalScroll.leftSide / signalCanvas.width;
-        var ratioWidth = (signalScroll.rightSide - signalScroll.leftSide) / signalCanvas.width;
-
-        var leftRes = Math.floor(res.length * ratioLeft);
-        var widthRest = Math.floor(res.length * ratioWidth);
-
-        console.log('leftRes: ' + leftRes);
-        console.log('widthRes: ' + widthRest);
-
-        var arr = res.slice(leftRes, leftRes + widthRest);
-        var step = signalCanvas.width / arr.length;
-        for (var i = 0, j = 0; j < arr.length; i += step, j++) {
-            signalCtx.beginPath();
-            signalCtx.arc(i, signalCanvas.height / 2 + arr[j] * 100, 1, 0, 2 * Math.PI);
-            signalCtx.fill();
-            signalCtx.closePath();
-        }
-    }
-
-    document.getElementById('record').onclick = function () {
-        if (!recording) {
-            leftChannel = [];
-            rightChannel = [];
-
-            this.innerHTML = 'Recording...';
-            recorded = [];
-            recLength = 0;
-
-        } else {
-            this.innerHTML = 'Record';
-            res = mergeBuffers(leftChannel, recLength);
-            drawSignal();
-            drawSpectrum();
-        }
-        recording = !recording;
-    };
 
 </script>
 </html>
